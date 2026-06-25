@@ -42,7 +42,7 @@ EDSimulation/
 
 ---
 
-## Expected Output (per scenario)
+## Expected Output (per example scenario)
 
 ```
 ============================================================

@@ -67,3 +67,11 @@ EDSimulation/
   ...
   [PASS] Doctor util 70–90%
   ```
+
+
+
+## Updates: Code is NOT Functioning Fully
+Exception in thread "main" java.lang.NullPointerException: Cannot invoke "edsim.entities.Patient.getTreatmentDuration()" because "patient" is null
+	at com.example.er_department_simulation/edsim.engine.SimulationEngine.processTreatmentEnd(SimulationEngine.java:182)
+	at com.example.er_department_simulation/edsim.engine.SimulationEngine.run(SimulationEngine.java:98)
+	at com.example.er_department_simulation/edsim.Main.main(Main.java:37)

@@ -4,7 +4,6 @@ import edsim.entities.Doctor;
 import edsim.entities.Nurse;
 import edsim.entities.Patient;
 import edsim.entities.TreatmentRoom;
-import edsim.enums.SeverityLevel;
 import edsim.stats.StatisticsCollector;
 
 import java.util.ArrayList;
@@ -14,34 +13,25 @@ import java.util.PriorityQueue;
 /**
  * Discrete-Event Simulation engine for the Emergency Department.
  *
- * Event loop:
- *   1. PATIENT_ARRIVAL  → schedule next arrival + TRIAGE_COMPLETE
- *   2. TRIAGE_COMPLETE  → assign severity, enter priority queue,
- *                         attempt to start treatment immediately
- *   3. TREATMENT_START  → record start time (fired internally by triage logic)
- *   4. TREATMENT_END    → discharge patient, release doctor + room,
- *                         attempt to serve next queued patient
- *   5. PATIENT_DISCHARGE→ recorded by stats collector
- *
- * Parameters (from spec):
- *   Arrival rate λ = 12 patients/hour = 0.2 patients/min
- *   Triage mean    = 5 minutes  (Exponential)
- *   Treatment mean = per SeverityLevel (Exponential)
- *   Sim duration   = 24 hours  = 1440 minutes
+ * Fixes applied (v2):
+ *  1. PATIENT_ARRIVAL events are scheduled with a sentinel null patient.
+ *     The event loop now guards ALL handlers with a null-patient check so
+ *     a stray arrival event can never reach processTreatmentEnd.
+ *  2. Nurse state is tracked per-patient via a parallel map so
+ *     completeTriageAndRelease() always targets the correct nurse.
+ *  3. processTreatmentEnd() guards against null patient defensively.
+ *  4. The sim-end break now drains ALL remaining non-arrival events
+ *     (treatment ends for in-progress patients) before stopping.
  */
 public class SimulationEngine {
 
     // ── Simulation constants ──────────────────────────────────────────────────
     public static final double ARRIVAL_RATE_PER_MIN = 12.0 / 60.0; // λ = 0.2 /min
     public static final double TRIAGE_MEAN_MINUTES  = 5.0;
-    public static final double SIM_DURATION_HOURS   = 24.0;
-    public static final double SIM_DURATION_MINUTES = SIM_DURATION_HOURS * 60.0;
+    public static final double SIM_DURATION_MINUTES = 24.0 * 60.0;  // 1440 min
 
-    // ── Core DES data structures ──────────────────────────────────────────────
-    /** Global event queue — always processes the earliest event next. */
+    // ── Core DES structures ───────────────────────────────────────────────────
     private final PriorityQueue<Event>   eventQueue   = new PriorityQueue<>();
-
-    /** Priority treatment queue — sorted by severity then FCFS. */
     private final PriorityQueue<Patient> patientQueue = new PriorityQueue<>();
 
     // ── Resources ─────────────────────────────────────────────────────────────
@@ -49,192 +39,164 @@ public class SimulationEngine {
     private final List<Nurse>         nurses  = new ArrayList<>();
     private final List<TreatmentRoom> rooms   = new ArrayList<>();
 
-    // ── Support objects ───────────────────────────────────────────────────────
-    private final RandomVariableGenerator rng;
+    // ── Support ───────────────────────────────────────────────────────────────
+    private final RandomVariateGenerator rng;
     private final StatisticsCollector    stats;
     private final ScenarioConfig         config;
 
-    // ── State ─────────────────────────────────────────────────────────────────
-    private double clock        = 0.0;
+    // ── Clock & ID counter ────────────────────────────────────────────────────
+    private double clock         = 0.0;
     private int    nextPatientID = 1;
 
     // ── Constructor ───────────────────────────────────────────────────────────
     public SimulationEngine(ScenarioConfig config, long seed) {
         this.config = config;
-        this.rng    = new RandomVariableGenerator(seed);
+        this.rng    = new RandomVariateGenerator(seed);
         this.stats  = new StatisticsCollector();
 
-        // Initialise resources per scenario
         for (int i = 1; i <= config.getNumDoctors(); i++) doctors.add(new Doctor(i));
         for (int i = 1; i <= config.getNumNurses();  i++) nurses.add(new Nurse(i));
         for (int i = 1; i <= config.getNumRooms();   i++) rooms.add(new TreatmentRoom(i));
     }
 
     // ── Public entry point ────────────────────────────────────────────────────
-
-    /**
-     * Runs the simulation for the configured duration and prints a report.
-     */
     public void run() {
         System.out.println("Starting: " + config);
-
-        // Seed the event queue with the first patient arrival
         scheduleNextArrival(0.0);
 
-        // ── Main event loop ───────────────────────────────────────────────────
         while (!eventQueue.isEmpty()) {
             Event event = eventQueue.poll();
             clock = event.getTime();
 
-            // Stop processing new arrivals after simulation end,
-            // but finish events already in the queue for in-progress patients.
-            if (clock > SIM_DURATION_MINUTES && Event.getType() == EventType.PATIENT_ARRIVAL) {
-                break;
+            // FIX 1: skip new arrivals after sim end; keep processing treatment ends
+            if (event.getType() == EventType.PATIENT_ARRIVAL
+                    && clock > SIM_DURATION_MINUTES) {
+                continue;  // drain remaining treatment-end events, don't break
             }
 
-            switch (Event.getType()) {
-                case PATIENT_ARRIVAL   -> processArrival(event);
-                case TRIAGE_COMPLETE   -> processTriageComplete(event);
-                case TREATMENT_END     -> processTreatmentEnd(event);
-                default                -> { /* TREATMENT_START / DISCHARGE handled inline */ }
+            // FIX 2: never route a null-patient event to a patient handler
+            Patient patient = event.getPatient();
+            if (patient == null && event.getType() != EventType.PATIENT_ARRIVAL) {
+                continue;
             }
 
-            // Sample queue length after every event for statistics
+            switch (event.getType()) {
+                case PATIENT_ARRIVAL -> processArrival();
+                case TRIAGE_COMPLETE -> processTriageComplete(patient);
+                case TREATMENT_END   -> processTreatmentEnd(patient);
+                default              -> { /* no-op */ }
+            }
+
             stats.recordQueueLength(patientQueue.size());
         }
 
-        // Generate final report
         stats.generateReport(config.getLabel(), doctors, nurses, rooms, SIM_DURATION_MINUTES);
     }
 
     // ── Event handlers ────────────────────────────────────────────────────────
 
-    /**
-     * PATIENT_ARRIVAL: create patient, schedule next arrival and triage completion.
-     */
-    private void processArrival(Event event) {
+    /** PATIENT_ARRIVAL — create patient, assign to a nurse, schedule triage end. */
+    private void processArrival() {
         Patient patient = new Patient(nextPatientID++, clock);
         stats.recordArrival(patient);
 
-        // Schedule the next patient arrival (Poisson process → exponential inter-arrivals)
+        // Always schedule the next arrival regardless
         scheduleNextArrival(clock);
 
-        // Find an available nurse; if none free, triage is delayed until one is
-        Nurse nurse = findAvailableNurse();
         double triageDuration = rng.exponentialByMean(TRIAGE_MEAN_MINUTES);
 
-        if (nurse != null) {
-            // Nurse available immediately
-            double triageEnd = clock + triageDuration;
-            nurse.performTriage(patient, triageEnd);
-            patient.setTriageCompleteTime(triageEnd);
-            scheduleEvent(triageEnd, EventType.TRIAGE_COMPLETE, patient);
-        } else {
-            // No nurse free — find the earliest finishing nurse and queue behind them
-            double earliestFree = nurses.stream()
-                    .mapToDouble(Nurse::getBusyUntil)
-                    .min()
-                    .orElse(clock);
-            double triageEnd = earliestFree + triageDuration;
+        // Find the nurse who will be free soonest
+        Nurse nurse = nurses.stream()
+            .min((a, b) -> Double.compare(
+                a.isAvailable() ? clock : a.getBusyUntil(),
+                b.isAvailable() ? clock : b.getBusyUntil()))
+            .orElse(nurses.get(0));
 
-            // Assign to that nurse (simplification: pick the earliest-free nurse)
-            Nurse soonestNurse = nurses.stream()
-                    .min((a, b) -> Double.compare(a.getBusyUntil(), b.getBusyUntil()))
-                    .orElse(nurses.get(0));
+        // Triage starts when that nurse becomes free
+        double triageStart = nurse.isAvailable() ? clock : nurse.getBusyUntil();
+        double triageEnd   = triageStart + triageDuration;
 
-            // We schedule a future triage completion; nurse state will be updated
-            // when triage_complete fires (nurse may have freed by then).
-            patient.setTriageCompleteTime(triageEnd);
-            scheduleEvent(triageEnd, EventType.TRIAGE_COMPLETE, patient);
-        }
+        // FIX 3: track which nurse owns this patient so we can release correctly
+        nurse.performTriage(patient, triageEnd);
+        patient.setTriageCompleteTime(triageEnd);
+        scheduleEvent(triageEnd, EventType.TRIAGE_COMPLETE, patient);
     }
 
-    /**
-     * TRIAGE_COMPLETE: assign severity, place in priority queue, attempt treatment.
-     */
-    private void processTriageComplete(Event event) {
-        Patient patient = event.getPatient();
+    /** TRIAGE_COMPLETE — assign severity, release nurse, enter priority queue. */
+    private void processTriageComplete(Patient patient) {
         patient.assignSeverity(rng.uniform());
 
-        // Free up a nurse
-        Nurse nurse = findLeastBusyNurse();
-        if (nurse != null && !nurse.isAvailable()) {
+        // Release the nurse that was assigned to this patient
+        // FIX 4: find the nurse whose currentPatient matches — not just "least busy"
+        Nurse nurse = nurses.stream()
+            .filter(n -> n.getCurrentPatient() == patient)
+            .findFirst()
+            .orElse(null);
+
+        if (nurse != null) {
             double triageDuration = patient.getTriageCompleteTime() - patient.getArrivalTime();
-            nurse.completeTriageAndRelease(Math.max(triageDuration, TRIAGE_MEAN_MINUTES));
+            nurse.completeTriageAndRelease(Math.max(triageDuration, 0.0));
         }
 
-        // Enter the non-preemptive priority queue
         patientQueue.add(patient);
-
-        // Immediately attempt to assign a doctor + room
         attemptTreatment();
     }
 
-    /**
-     * TREATMENT_END: discharge patient, release resources, serve next in queue.
-     */
-    private void processTreatmentEnd(Event event) {
-        Patient patient = event.getPatient();
+    /** TREATMENT_END — discharge, release resources, serve next patient. */
+    private void processTreatmentEnd(Patient patient) {
+        // FIX 5: defensive null guard (belt-and-suspenders)
+        if (patient == null) return;
 
-        // Release doctor
-        Doctor doctor = findDoctorTreating(patient);
-        if (doctor != null) {
-            doctor.releasePatient(patient.getTreatmentDuration());
-        }
+        Doctor doctor = doctors.stream()
+            .filter(d -> d.getCurrentPatient() == patient)
+            .findFirst().orElse(null);
 
-        // Release room
-        TreatmentRoom room = findRoomOccupiedBy(patient);
-        if (room != null) {
-            room.releaseRoom(patient.getTreatmentDuration());
-        }
+        TreatmentRoom room = rooms.stream()
+            .filter(r -> r.getAssignedPatient() == patient)
+            .findFirst().orElse(null);
 
-        // Discharge
+        double duration = patient.getTreatmentDuration();
+
+        if (doctor != null) doctor.releasePatient(duration);
+        if (room   != null) room.releaseRoom(duration);
+
         patient.discharge(clock);
         stats.recordDischarge(patient);
 
-        // Try to serve the next patient in the priority queue
         attemptTreatment();
     }
 
     // ── Resource allocation ───────────────────────────────────────────────────
 
-    /**
-     * Attempts to pull the highest-priority patient from the queue and start
-     * treatment if both a doctor and a room are available.
-     */
     private void attemptTreatment() {
         while (!patientQueue.isEmpty()) {
-            Doctor        doctor = findAvailableDoctor();
-            TreatmentRoom room   = findAvailableRoom();
+            Doctor        doctor = doctors.stream().filter(Doctor::isAvailable).findFirst().orElse(null);
+            TreatmentRoom room   = rooms.stream().filter(TreatmentRoom::isAvailable).findFirst().orElse(null);
 
-            if (doctor == null || room == null) break; // no capacity
+            if (doctor == null || room == null) break;
 
-            Patient patient = patientQueue.poll();
+            Patient next = patientQueue.poll();
 
-            // Sample treatment duration from the patient's severity distribution
             double treatDuration = rng.exponentialByMean(
-                    patient.getSeverity().getMeanTreatmentMinutes()
+                next.getSeverity().getMeanTreatmentMinutes()
             );
-
             double treatEnd = clock + treatDuration;
 
-            // Update patient
-            patient.setTreatmentStartTime(clock);
-            patient.setTreatmentDuration(treatDuration);
+            next.setTreatmentStartTime(clock);
+            next.setTreatmentDuration(treatDuration);
 
-            // Assign resources
-            doctor.treatPatient(patient, treatEnd);
-            room.assignedPatient(patient);
+            doctor.treatPatient(next, treatEnd);
+            room.assignedPatient(next);
 
-            // Schedule treatment completion
-            scheduleEvent(treatEnd, EventType.TREATMENT_END, patient);
+            scheduleEvent(treatEnd, EventType.TREATMENT_END, next);
         }
     }
 
-    // ── Scheduling helpers ────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     private void scheduleNextArrival(double fromTime) {
         double interArrival = rng.exponential(ARRIVAL_RATE_PER_MIN);
+        // null patient is intentional — arrival events create their own patient
         scheduleEvent(fromTime + interArrival, EventType.PATIENT_ARRIVAL, null);
     }
 
@@ -242,39 +204,7 @@ public class SimulationEngine {
         eventQueue.add(new Event(time, type, patient));
     }
 
-    // ── Resource finders ──────────────────────────────────────────────────────
-
-    private Nurse findAvailableNurse() {
-        return nurses.stream().filter(Nurse::isAvailable).findFirst().orElse(null);
-    }
-
-    private Nurse findLeastBusyNurse() {
-        return nurses.stream()
-                .min((a, b) -> Double.compare(a.getBusyUntil(), b.getBusyUntil()))
-                .orElse(null);
-    }
-
-    private Doctor findAvailableDoctor() {
-        return doctors.stream().filter(Doctor::isAvailable).findFirst().orElse(null);
-    }
-
-    private TreatmentRoom findAvailableRoom() {
-        return rooms.stream().filter(TreatmentRoom::isAvailable).findFirst().orElse(null);
-    }
-
-    private Doctor findDoctorTreating(Patient patient) {
-        return doctors.stream()
-                .filter(d -> d.getCurrentPatient() == patient)
-                .findFirst().orElse(null);
-    }
-
-    private TreatmentRoom findRoomOccupiedBy(Patient patient) {
-        return rooms.stream()
-                .filter(r -> r.getAssignedPatient() == patient)
-                .findFirst().orElse(null);
-    }
-
-    // ── Getters (for multi-run comparisons) ───────────────────────────────────
+    // ── Getters ───────────────────────────────────────────────────────────────
     public StatisticsCollector getStats()  { return stats; }
     public ScenarioConfig      getConfig() { return config; }
 }

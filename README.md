@@ -65,6 +65,11 @@ EDSimulation/
 --- Doctor Utilisation --
   Doctor 1  :  82.3%  (treated 71 patients)
 
+
+
+
+```
+============================================================
 ---
 
 ## Configuration

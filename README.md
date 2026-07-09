@@ -62,16 +62,56 @@ EDSimulation/
   [PASS] Avg queue < 10 patients
   [PASS] Completion rate >= 95%
 
---- Doctor Utilisation ---
+--- Doctor Utilisation --
   Doctor 1  :  82.3%  (treated 71 patients)
+
+
+
+
+```
+
+## Configuration
+
+```
+
+# ============================================================
+#  Emergency Department Simulation — Configuration File
+#  CS4632 | Mbah Tichuck Mbanwei
+#
+#  All parameters can also be overridden via CLI arguments:
+#  java -cp out Main --arrivalRate 15 --doctors 5 --nurses 4
+# ============================================================
+ 
+# ── Arrival process ───────────────────────────────────────────
+# Average patient arrivals per hour (Poisson process)
+arrivalRatePerHour=12
+ 
+# ── Simulation duration ───────────────────────────────────────
+# How many hours to simulate
+simulationHours=24
+ 
+# ── Staffing (baseline) ───────────────────────────────────────
+numDoctors=4
+numNurses=3
+numRooms=8
+ 
+# ── Triage ────────────────────────────────────────────────────
+# Mean triage duration in minutes (Exponential distribution)
+triageMeanMinutes=5
+ 
+# ── Random seed ───────────────────────────────────────────────
+# Use 0 for a different result each run
+seed=42
+ 
+# ── Output ────────────────────────────────────────────────────
+# Directory where CSV results are written (relative to working dir)
+outputDir=results
+ 
+# ── Run mode ──────────────────────────────────────────────────
+# single  → run one scenario using the parameters above
+# all     → run all four pre-defined scenarios (A-D)
+# experiment → run the full 10-run experiment matrix
+runMode=experiment
   ...
   [PASS] Doctor util 70–90%
   ```
-
-
-
-## Updates: Code is NOT Functioning Fully
-Exception in thread "main" java.lang.NullPointerException: Cannot invoke "edsim.entities.Patient.getTreatmentDuration()" because "patient" is null
-	at com.example.er_department_simulation/edsim.engine.SimulationEngine.processTreatmentEnd(SimulationEngine.java:182)
-	at com.example.er_department_simulation/edsim.engine.SimulationEngine.run(SimulationEngine.java:98)
-	at com.example.er_department_simulation/edsim.Main.main(Main.java:37)

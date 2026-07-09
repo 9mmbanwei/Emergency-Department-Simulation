@@ -69,12 +69,10 @@ EDSimulation/
 
 
 ```
-============================================================
----
 
 ## Configuration
 
----
+```
 
 # ============================================================
 #  Emergency Department Simulation — Configuration File

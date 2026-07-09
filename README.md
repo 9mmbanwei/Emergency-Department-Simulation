@@ -67,7 +67,7 @@ EDSimulation/
 
 ---
 
-**## Configuration**
+## Configuration
 
 ---
 

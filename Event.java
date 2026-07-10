@@ -11,7 +11,9 @@ import edsim.entities.Patient;
 public class Event implements Comparable<Event> {
 
     private final double    time;       // simulation clock time this event fires
-    private static EventType type;
+    private final EventType type;  // FIX: was `static` — shared across ALL Event
+                                   // instances, corrupting getType() for every
+                                   // event still sitting in the queue.
     private final Patient   patient;    // patient associated with this event
 
 
@@ -30,7 +32,7 @@ public class Event implements Comparable<Event> {
     }
 
     public double getTime()    { return time; }
-    public static EventType getType()    { return type; }
+    public EventType getType()    { return type; } //QUICK FIX this was static
     public Patient   getPatient() { return patient; }
 
     @Override

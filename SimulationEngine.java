@@ -4,6 +4,7 @@ import edsim.entities.Doctor;
 import edsim.entities.Nurse;
 import edsim.entities.Patient;
 import edsim.entities.TreatmentRoom;
+import edsim.stats.RunResult;
 import edsim.stats.StatisticsCollector;
 
 import java.util.ArrayList;
@@ -12,7 +13,7 @@ import java.util.PriorityQueue;
 
 /**
  * Discrete-Event Simulation engine for the Emergency Department.
- 
+
  * Fixes applied (v2):
  *  1. PATIENT_ARRIVAL events are scheduled with a sentinel null patient.
  *     The event loop now guards ALL handlers with a null-patient check so
@@ -22,7 +23,7 @@ import java.util.PriorityQueue;
  *  3. processTreatmentEnd() guards against null patient defensively.
  *  4. The sim-end break now drains ALL remaining non-arrival events
  *     (treatment ends for in-progress patients) before stopping.
- 
+
  * <p><b>UML References:</b></p>
  * <ul>
  *   <li>{@see <a href="../../../../../../../docs/class-diagram.drawio">Class Diagram</a>}</li>
@@ -177,7 +178,8 @@ public class SimulationEngine {
                 .filter(n -> n.getCurrentPatient() == patient)
                 .findFirst()
                 .ifPresent(n -> n.completeTriageAndRelease(
-                        Math.max(patient.getTriageCompleteTime() - patient.getArrivalTime(), 0.0)));
+                        Math.max(patient.getTriageCompleteTime() - patient.getArrivalTime(), 0.0),
+                        patient.getTriageCompleteTime()));
 
         patientQueue.add(patient);
         attemptTreatment();

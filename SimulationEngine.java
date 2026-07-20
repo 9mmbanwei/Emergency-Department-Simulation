@@ -4,6 +4,7 @@ import edsim.entities.Doctor;
 import edsim.entities.Nurse;
 import edsim.entities.Patient;
 import edsim.entities.TreatmentRoom;
+import edsim.enums.SeverityLevel;
 import edsim.stats.RunResult;
 import edsim.stats.StatisticsCollector;
 
@@ -13,22 +14,27 @@ import java.util.PriorityQueue;
 
 /**
  * Discrete-Event Simulation engine for the Emergency Department.
-
- * Fixes applied (v2):
- *  1. PATIENT_ARRIVAL events are scheduled with a sentinel null patient.
- *     The event loop now guards ALL handlers with a null-patient check so
- *     a stray arrival event can never reach processTreatmentEnd.
- *  2. Nurse state is tracked per-patient via a parallel map so
- *     completeTriageAndRelease() always targets the correct nurse.
- *  3. processTreatmentEnd() guards against null patient defensively.
- *  4. The sim-end break now drains ALL remaining non-arrival events
- *     (treatment ends for in-progress patients) before stopping.
-
- * <p><b>UML References:</b></p>
- * <ul>
- *   <li>{@see <a href="../../../../../../../docs/class-diagram.drawio">Class Diagram</a>}</li>
- *   <li>{@see <a href="../../../../../../../docs/activity-diagram.drawio">Activity Diagram</a>}</li>
- * </ul>
+ *
+ * <p><b>M4 fix — utilization denominator:</b> under backlog-draining overload
+ * the event loop keeps running past the nominal {@code simDurationMinutes}
+ * window to discharge every in-progress patient. Utilization was previously
+ * computed as busyTime / simDurationMinutes (the fixed nominal window), which
+ * produced figures above 100% whenever a run's actual elapsed time exceeded
+ * the window. The engine now tracks {@code clock} as the actual elapsed
+ * simulated time (the timestamp of the last processed event) and passes THAT
+ * to utilization calculations instead. The nominal window is still used
+ * separately to report within-window completion.</p>
+ *
+ * <p><b>M4 addition — within-window completion:</b> {@code RunResult} now
+ * reports both total completion (including backlog-drain discharges, which
+ * is always ~100%) and within-window completion (patients actually
+ * discharged before the nominal window closes), which is the metric that
+ * reflects whether staffing meets demand during the intended service
+ * period.</p>
+ *
+ * <p><b>M4 addition — per-severity wait breakdown:</b> RunResult now carries
+ * mean wait time per SeverityLevel so CRITICAL-patient wait is visible even
+ * when the global average looks acceptable.</p>
  *
  * @see ScenarioConfig
  * @see SimConfig
@@ -133,19 +139,44 @@ public class SimulationEngine {
             stats.recordQueueLength(patientQueue.size());
         }
 
+        // M4 fix: actual elapsed simulated time is the clock value when the
+        // event queue drains — this can exceed simDurationMinutes under
+        // backlog-draining overload (busy time keeps accruing after the
+        // nominal window while the backlog clears), and utilization must be
+        // measured against it, not the fixed nominal window.
+        //
+        // Edge case: if no patient ever arrived (degeneracy test at a near-
+        // zero arrival rate), the only event processed is a single skipped
+        // PATIENT_ARRIVAL past the window, and totalBusyTime is 0 for every
+        // resource — so the denominator doesn't matter, but we still fall
+        // back to the nominal window for a well-defined (0%) utilization
+        // figure rather than an arbitrary overshoot time.
+        double actualElapsedMinutes = (nextPatientID == 1)
+                ? simDurationMinutes
+                : Math.max(clock, simDurationMinutes);
+
         long execMs = System.currentTimeMillis() - startMs;
-        stats.generateReport(scenarioLabel, doctors, nurses, rooms, simDurationMinutes);
+        stats.generateReport(scenarioLabel, doctors, nurses, rooms, simDurationMinutes, actualElapsedMinutes);
 
         return new RunResult(
                 runID, scenarioLabel,
                 doctors.size(), nurses.size(), rooms.size(),
                 arrivalRatePerHour, triageMean, seed,
                 stats.getPatientsArrived(), stats.getThroughput(),
-                stats.getCompletionRate(), stats.getAverageWaitTime(),
+                stats.getCompletionRate(),
+                stats.getDischargedWithinWindow(simDurationMinutes),
+                stats.getCompletionRateWithinWindow(simDurationMinutes),
+                stats.getAverageWaitTime(),
                 stats.getMaxWaitTime(), stats.getAverageQueueLength(),
-                stats.getAvgDoctorUtil(doctors, simDurationMinutes),
-                stats.getAvgNurseUtil(nurses,   simDurationMinutes),
-                stats.getAvgRoomUtil(rooms,      simDurationMinutes),
+                stats.getAvgWaitTimeBySeverity(SeverityLevel.CRITICAL),
+                stats.getAvgWaitTimeBySeverity(SeverityLevel.HIGH),
+                stats.getAvgWaitTimeBySeverity(SeverityLevel.MODERATE),
+                stats.getAvgWaitTimeBySeverity(SeverityLevel.LOW),
+                stats.getAvgWaitTimeBySeverity(SeverityLevel.MINOR),
+                stats.getAvgDoctorUtil(doctors, actualElapsedMinutes),
+                stats.getAvgNurseUtil(nurses,   actualElapsedMinutes),
+                stats.getAvgRoomUtil(rooms,     actualElapsedMinutes),
+                actualElapsedMinutes, simDurationMinutes,
                 execMs
         );
     }

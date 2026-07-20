@@ -10,11 +10,14 @@ import java.util.List;
 /**
  * Exports simulation run results to CSV files in the configured output directory.
  *
- * <p>Two files are produced:</p>
+ * <p>Files produced:</p>
  * <ul>
- *   <li>{@code simulation_runs.csv}    — one row per run, all metrics</li>
- *   <li>{@code patient_samples.csv}    — per-patient wait/severity data
- *       (written per-run by {@link StatisticsCollector})</li>
+ *   <li>{@code simulation_runs.csv}    — one row per run, all metrics (M4: now
+ *       includes within-window completion, per-severity wait, and actual
+ *       elapsed time alongside the nominal window)</li>
+ *   <li>{@code patient_data_run<N>.csv} — per-patient wait/severity data</li>
+ *   <li>{@code scenario_replication_summary.csv} — mean + 95% CI across
+ *       replications per scenario (M4, written by {@link ReplicationStats})</li>
  * </ul>
  */
 public class CSVExporter {
@@ -23,9 +26,12 @@ public class CSVExporter {
             "runID,scenarioLabel," +
                     "numDoctors,numNurses,numRooms," +
                     "arrivalRatePerHour,triageMeanMinutes,seed," +
-                    "patientsArrived,patientsDischarged," +
-                    "completionRatePct,avgWaitTimeMin,maxWaitTimeMin," +
-                    "avgQueueLength,avgDoctorUtilPct,avgNurseUtilPct,avgRoomUtilPct," +
+                    "patientsArrived,patientsDischargedTotal,completionRatePctTotal," +
+                    "patientsDischargedWithinWindow,completionRatePctWithinWindow," +
+                    "avgWaitTimeMin,maxWaitTimeMin,avgQueueLength," +
+                    "avgWaitCriticalMin,avgWaitHighMin,avgWaitModerateMin,avgWaitLowMin,avgWaitMinorMin," +
+                    "avgDoctorUtilPct,avgNurseUtilPct,avgRoomUtilPct," +
+                    "actualElapsedMinutes,nominalWindowMinutes," +
                     "executionTimeMs," +
                     "passWaitTime,passQueueLength,passCompletionRate,passDoctorUtil";
 
@@ -39,6 +45,8 @@ public class CSVExporter {
             System.err.println("[CSV] Could not create output directory: " + outputDir);
         }
     }
+
+    public String getOutputDir() { return outputDir; }
 
     /**
      * Writes all run results to {@code simulation_runs.csv}.

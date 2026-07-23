@@ -103,7 +103,18 @@ public class ReplicationStats {
      * (all sharing the same parameters, differing only by seed).
      */
     public static void exportScenarioSummary(String outputDir, Map<String, List<RunResult>> scenarioRuns) {
-        String path = outputDir + "/scenario_replication_summary.csv";
+        exportScenarioSummary(outputDir, scenarioRuns, "scenario_replication_summary.csv");
+    }
+
+    /**
+     * Same as {@link #exportScenarioSummary(String, Map)} but with a
+     * caller-supplied file name, so callers other than the M4 scenario
+     * replication study (e.g. the M4-revision sensitivity-sweep replication
+     * in {@code Main.runSensitivityReplication}) can write their own
+     * mean/CI summary without overwriting {@code scenario_replication_summary.csv}.
+     */
+    public static void exportScenarioSummary(String outputDir, Map<String, List<RunResult>> scenarioRuns, String fileName) {
+        String path = outputDir + "/" + fileName;
         try (PrintWriter pw = new PrintWriter(new FileWriter(path))) {
             pw.println("scenarioLabel,numDoctors,numNurses,numRooms,arrivalRatePerHour,triageMeanMinutes,replications," +
                     "meanWaitMin,waitCI95Lower,waitCI95Upper," +

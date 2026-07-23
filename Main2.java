@@ -23,6 +23,14 @@ import java.util.Map;
  *   <li>{@code replication} — M4: each scenario run across multiple seeds,
  *       producing mean + 95% CI per metric in
  *       {@code results/scenario_replication_summary.csv}</li>
+ *   <li>{@code sensitivity} — M4 revision: re-runs the M3 one-at-a-time
+ *       parameter sweep (baseline, doctors, arrival rate, triage mean) across
+ *       the same {@link #REPLICATION_SEEDS} 8-seed set used by {@code
+ *       replication}, so the Section 2 sensitivity ratios carry 95% CIs
+ *       instead of resting on the single seed=42 point estimates. Output in
+ *       {@code results/sensitivity_replication_summary.csv}. Added in
+ *       response to M4 feedback that the sensitivity study inherited noise
+ *       from single-seed rows near the &rho;&asymp;1 high-variance region.</li>
  * </ul>
  *
  * <p><b>M4 scenario set</b> ({@link #buildM4Scenarios()}) covers three
@@ -62,6 +70,7 @@ public class Main {
             case "all"         -> results.addAll(runAllScenarios(cfg));
             case "experiment"  -> results.addAll(runExperiment(cfg, exporter));
             case "replication" -> results.addAll(runReplicationStudy(cfg, exporter));
+            case "sensitivity" -> results.addAll(runSensitivityReplication(cfg, exporter));
             default -> {
                 System.err.println("[Error] Unknown runMode: " + cfg.getRunMode());
                 System.exit(1);
@@ -170,6 +179,64 @@ public class Main {
 
         ReplicationStats.exportScenarioSummary(exporter.getOutputDir(), byScenario);
         return allResults;
+    }
+
+    /**
+     * M4 revision (post-feedback): re-runs the M3 one-at-a-time parameter
+     * sweep — the same nine configurations behind Section 2's Table 1/Table 2
+     * ({@link #buildSensitivitySweepConfigs()}) — across the same 8-seed
+     * {@link #REPLICATION_SEEDS} set used by {@link #runReplicationStudy}
+     * for the scenario study, instead of the single seed=42 used in M3/the
+     * original M4 draft. This lets the sensitivity ratios in the revised
+     * Section 2.1 carry 95% CIs, so rows sitting near the &rho;&asymp;1
+     * high-variance region (Doctors 4&rarr;5, Arrival rate 12&rarr;15) no
+     * longer rest on noisy single-run point estimates.
+     */
+    private static List<RunResult> runSensitivityReplication(SimConfig cfg, CSVExporter exporter) {
+        List<RunResult> allResults = new ArrayList<>();
+        Map<String, List<RunResult>> byConfig = new LinkedHashMap<>();
+
+        List<ScenarioSpec> configs = buildSensitivitySweepConfigs();
+
+        int runID = 1;
+        for (ScenarioSpec spec : configs) {
+            List<RunResult> replications = new ArrayList<>();
+            for (long seed : REPLICATION_SEEDS) {
+                SimulationEngine engine = new SimulationEngine(
+                        spec.label, spec.doctors, spec.nurses, spec.rooms,
+                        spec.arrivalRatePerHour, spec.triageMeanMinutes, spec.simHours, seed);
+                RunResult result = engine.run(runID++, spec.arrivalRatePerHour, spec.triageMeanMinutes, seed);
+                replications.add(result);
+                allResults.add(result);
+            }
+            byConfig.put(spec.label, replications);
+        }
+
+        ReplicationStats.exportScenarioSummary(
+                exporter.getOutputDir(), byConfig, "sensitivity_replication_summary.csv");
+        return allResults;
+    }
+
+    /**
+     * The nine one-at-a-time parameter-sweep configurations from the M3
+     * matrix / M4 Table 1 (baseline, doctors 4&rarr;5&rarr;6, arrival rate
+     * 12&rarr;10/15/18, triage mean 5&rarr;3/5.5/8), each held at the common
+     * baseline (4 doctors, 3 nurses, 8 rooms, &lambda;=12/hr, triage mean =
+     * 5 min) except for the single parameter varied in that row. Labels are
+     * ordered to match Table 1's Run 01-09 numbering.
+     */
+    private static List<ScenarioSpec> buildSensitivitySweepConfigs() {
+        List<ScenarioSpec> configs = new ArrayList<>();
+        configs.add(new ScenarioSpec("Sens01_Baseline_4doc",     4, 3, 8, 12.0, 5.0, 24.0));
+        configs.add(new ScenarioSpec("Sens02_Doctors_5doc",      5, 3, 8, 12.0, 5.0, 24.0));
+        configs.add(new ScenarioSpec("Sens03_Doctors_6doc",      6, 3, 8, 12.0, 5.0, 24.0));
+        configs.add(new ScenarioSpec("Sens04_ArrivalRate_10hr",  4, 3, 8, 10.0, 5.0, 24.0));
+        configs.add(new ScenarioSpec("Sens05_ArrivalRate_15hr",  4, 3, 8, 15.0, 5.0, 24.0));
+        configs.add(new ScenarioSpec("Sens06_ArrivalRate_18hr",  4, 3, 8, 18.0, 5.0, 24.0));
+        configs.add(new ScenarioSpec("Sens07_TriageMean_3min",   4, 3, 8, 12.0, 3.0, 24.0));
+        configs.add(new ScenarioSpec("Sens08_TriageMean_5p5min", 4, 3, 8, 12.0, 5.5, 24.0));
+        configs.add(new ScenarioSpec("Sens09_TriageMean_8min",   4, 3, 8, 12.0, 8.0, 24.0));
+        return configs;
     }
 
     /**
